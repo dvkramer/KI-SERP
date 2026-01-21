@@ -2,11 +2,10 @@
   "manifest_version": 3,
   "name": "Kramer Intelligence",
   "version": "1.0",
-  "permissions": ["storage"],
   "host_permissions": [
     "*://www.google.com/search*",
     "*://www.bing.com/search*",
-    "https://generativelanguage.googleapis.com/*"
+    "https://ki-vercel-for-serp.vercel.app/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -17,8 +16,5 @@
       "js": ["content.js"],
       "css": ["style.css"]
     }
-  ],
-  "action": {
-    "default_popup": "options.html"
-  }
+  ]
 }
