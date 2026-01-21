@@ -9,11 +9,18 @@
   max-width: 50vw; 
   color: #e0e0e0;
   box-sizing: border-box;
+  position: relative !important;
+  z-index: 1000 !important;
 }
 
 /* Extra space for Bing to prevent SERP overlap */
 #kramer-ai-box.bing-layout {
   margin-bottom: 50px;
+}
+
+/* Fix DuckDuckGo left alignment */
+#kramer-ai-box.ddg-layout {
+  margin-left: 150px;
 }
 
 .kramer-header {

@@ -3,8 +3,13 @@
   "name": "Kramer Intelligence",
   "version": "1.0",
   "host_permissions": [
-    "*://www.google.com/search*",
-    "*://www.bing.com/search*",
+    "*://www.google.com/*",
+    "*://www.bing.com/*",
+    "*://duckduckgo.com/*",
+    "*://search.yahoo.com/*",
+    "*://search.brave.com/*",
+    "*://yandex.com/*",
+    "*://www.ecosia.org/*",
     "https://ki-vercel-for-serp.vercel.app/*"
   ],
   "background": {
@@ -12,7 +17,15 @@
   },
   "content_scripts": [
     {
-      "matches": ["*://www.google.com/search*", "*://www.bing.com/search*"],
+      "matches": [
+        "*://www.google.com/search*",
+        "*://www.bing.com/search*",
+        "*://duckduckgo.com/*",
+        "*://search.yahoo.com/search*",
+        "*://search.brave.com/search*",
+        "*://yandex.com/search*",
+        "*://www.ecosia.org/search*"
+      ],
       "js": ["content.js"],
       "css": ["style.css"]
     }
