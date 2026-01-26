@@ -1,13 +1,15 @@
 // Config for different search engines
 const SEARCH_ENGINES = {
   'google.com': { queryParam: 'q', selectors: ['#center_col', '#main'] },
-  'bing.com': { queryParam: 'q', selectors: ['#b_content', '#b_results'], extraClass: 'bing-layout' },
+  'bing.com': { queryParam: 'q', selectors: ['#b_results', '#b_content'], extraClass: 'bing-layout', waitForStable: true },
   'duckduckgo.com': { queryParam: 'q', selectors: ['#links', '#web_content_wrapper', 'main'], extraClass: 'ddg-layout' },
   'yahoo.com': { queryParam: 'p', selectors: ['#web', '#main-algo', '#results'] },
   'brave.com': { queryParam: 'q', selectors: ['#results', 'main'], waitForStable: true },
   'yandex.com': { queryParam: 'text', selectors: ['.main__center', '.content__left', '.serp-list'] },
   'ecosia.org': { queryParam: 'q', selectors: ['.mainline', '.results', 'main'] }
 };
+
+let isInjecting = false; // Semaphore to prevent double-injection
 
 function getEngineConfig() {
   const hostname = window.location.hostname;
@@ -32,16 +34,19 @@ function findTarget(selectors) {
 }
 
 function injectKramerBox() {
+  // 1. Guard: Check if box already exists or if we are currently injecting
+  if (document.querySelector("#kramer-ai-box") || isInjecting) return;
+
   const config = getEngineConfig();
   if (!config) return;
 
   const query = getQuery(config);
   if (!query) return;
 
-  if (document.querySelector("#kramer-ai-box")) return;
-
   const target = findTarget(config.selectors);
   if (!target) return;
+
+  isInjecting = true; // Lock
 
   const box = document.createElement("div");
   box.id = "kramer-ai-box";
@@ -55,7 +60,12 @@ function injectKramerBox() {
     <div id="kramer-content">Gathering thoughts...</div>
   `;
   
-  target.prepend(box);
+  // Handle list elements (Bing uses <ol>) by inserting before, keeping HTML valid
+  if (target.tagName === 'OL' || target.tagName === 'UL') {
+    target.parentElement.insertBefore(box, target);
+  } else {
+    target.prepend(box);
+  }
 
   chrome.runtime.sendMessage({ type: "FETCH_AI_ANSWER", query: query }, (response) => {
     const contentDiv = document.getElementById("kramer-content");
@@ -63,55 +73,49 @@ function injectKramerBox() {
       if (response.error) {
         contentDiv.innerText = response.error;
       } else {
-        // Convert Markdown bold (**text**) to HTML <b> tags
-        const formattedAnswer = response.answer.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
-        contentDiv.innerHTML = formattedAnswer; // Use innerHTML instead of innerText
+        const formattedAnswer = response.answer
+          .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
+          .replace(/\*(.*?)\*/g, '<i>$1</i>');
+          
+        contentDiv.innerHTML = formattedAnswer; 
       }
     }
+    isInjecting = false; // Unlock
   });
 }
 
-function waitForStableDOM(config) {
-  let mutationTimeout;
-  const observer = new MutationObserver(() => {
-    // Clear previous timeout
-    clearTimeout(mutationTimeout);
-    
-    // Wait 500ms of no mutations before injecting
-    mutationTimeout = setTimeout(() => {
-      observer.disconnect();
-      injectKramerBox();
+// Optimized: Persistent Observer instead of polling
+function startPersistentObserver(config) {
+  let debounceTimeout;
+
+  const observer = new MutationObserver((mutations) => {
+    // Debounce: Only act if the DOM stops changing for 500ms
+    clearTimeout(debounceTimeout);
+    debounceTimeout = setTimeout(() => {
+      // Check if our box is missing
+      if (!document.querySelector("#kramer-ai-box")) {
+        injectKramerBox();
+      }
     }, 500);
   });
 
-  const target = findTarget(config.selectors);
-  if (target) {
-    observer.observe(target, { childList: true, subtree: true });
-    
-    // Fallback: stop observing after 5 seconds
-    setTimeout(() => {
-      observer.disconnect();
-      injectKramerBox();
-    }, 5000);
-  }
+  // Observe the body for major layout changes (AJAX navigation/hydration)
+  observer.observe(document.body, { 
+    childList: true, 
+    subtree: true 
+  });
 }
 
+// Initial Bootstrap
 const config = getEngineConfig();
-if (config && config.waitForStable) {
-  // For Brave: wait for DOM to stabilize
+if (config) {
+  // Try immediate injection
+  injectKramerBox();
+
+  // Start the persistent observer to handle AJAX and Hydration
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => waitForStableDOM(config));
+    document.addEventListener('DOMContentLoaded', () => startPersistentObserver(config));
   } else {
-    waitForStableDOM(config);
+    startPersistentObserver(config);
   }
-} else {
-  // For other engines: inject normally
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', injectKramerBox);
-  } else {
-    injectKramerBox();
-  }
-  
-  // Single delayed retry for any dynamic loading
-  setTimeout(injectKramerBox, 1500);
 }
