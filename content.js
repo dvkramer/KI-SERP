@@ -63,7 +63,9 @@ function injectKramerBox() {
       if (response.error) {
         contentDiv.innerText = response.error;
       } else {
-        contentDiv.innerText = response.answer;
+        // Convert Markdown bold (**text**) to HTML <b> tags
+        const formattedAnswer = response.answer.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
+        contentDiv.innerHTML = formattedAnswer; // Use innerHTML instead of innerText
       }
     }
   });
