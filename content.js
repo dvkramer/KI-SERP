@@ -9,7 +9,10 @@ const SEARCH_ENGINES = {
   'ecosia.org': { queryParam: 'q', selectors: ['.mainline', '.results', 'main'] }
 };
 
-let isInjecting = false; // Semaphore to prevent double-injection
+// State management
+let isCreatingBox = false; // Short-term lock for DOM manipulation
+let lastQuery = null;      // Track the query currently being fetched or displayed
+let cachedResponse = null; // Store the answer to prevent re-fetching
 
 function getEngineConfig() {
   const hostname = window.location.hostname;
@@ -33,9 +36,19 @@ function findTarget(selectors) {
   return null;
 }
 
+// Helper to format text
+function formatAnswer(text) {
+  return text
+    .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
+    .replace(/\*(.*?)\*/g, '<i>$1</i>');
+}
+
 function injectKramerBox() {
-  // 1. Guard: Check if box already exists or if we are currently injecting
-  if (document.querySelector("#kramer-ai-box") || isInjecting) return;
+  // 1. Guard: If box exists, stop.
+  if (document.getElementById("kramer-ai-box")) return;
+  
+  // 2. Guard: If we are literally in the middle of creating the div, stop.
+  if (isCreatingBox) return;
 
   const config = getEngineConfig();
   if (!config) return;
@@ -46,7 +59,8 @@ function injectKramerBox() {
   const target = findTarget(config.selectors);
   if (!target) return;
 
-  isInjecting = true; // Lock
+  // Lock acquired
+  isCreatingBox = true;
 
   const box = document.createElement("div");
   box.id = "kramer-ai-box";
@@ -55,51 +69,85 @@ function injectKramerBox() {
     box.classList.add(config.extraClass);
   }
 
-  box.innerHTML = `
-    <div class="kramer-header">🕶️ Kramer Intelligence</div>
-    <div id="kramer-content">Gathering thoughts...</div>
-  `;
-  
-  // Handle list elements (Bing uses <ol>) by inserting before, keeping HTML valid
+  // 3. Render Content
+  // If we have a cached response for THIS query, show it immediately.
+  // This prevents "Gathering thoughts..." flashing if the box was just wiped.
+  if (query === lastQuery && cachedResponse) {
+    let contentHtml = "Gathering thoughts...";
+    if (cachedResponse.error) {
+        contentHtml = cachedResponse.error;
+    } else if (cachedResponse.answer) {
+        contentHtml = formatAnswer(cachedResponse.answer);
+    }
+    
+    box.innerHTML = `
+      <div class="kramer-header">🕶️ Kramer Intelligence</div>
+      <div id="kramer-content">${contentHtml}</div>
+    `;
+  } else {
+    // New query or still loading: Show loading state
+    box.innerHTML = `
+      <div class="kramer-header">🕶️ Kramer Intelligence</div>
+      <div id="kramer-content">Gathering thoughts...</div>
+    `;
+  }
+
+  // 4. Insert into DOM
+  // Insert BEFORE lists to keep HTML valid, otherwise PREPEND inside containers
   if (target.tagName === 'OL' || target.tagName === 'UL') {
     target.parentElement.insertBefore(box, target);
   } else {
     target.prepend(box);
   }
 
-  chrome.runtime.sendMessage({ type: "FETCH_AI_ANSWER", query: query }, (response) => {
-    const contentDiv = document.getElementById("kramer-content");
-    if (response && contentDiv) {
-      if (response.error) {
-        contentDiv.innerText = response.error;
-      } else {
-        const formattedAnswer = response.answer
-          .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
-          .replace(/\*(.*?)\*/g, '<i>$1</i>');
-          
-        contentDiv.innerHTML = formattedAnswer; 
-      }
-    }
-    isInjecting = false; // Unlock
-  });
+  // Unlock DOM manipulation immediately so we can recover if wiped
+  isCreatingBox = false;
+
+  // 5. Fetch ONLY if this is a brand new query
+  // We check 'query !== lastQuery' to ensure we only fire the API once per unique search.
+  if (query !== lastQuery) {
+    // LOCK: Mark this query as "in progress" immediately
+    lastQuery = query;
+    cachedResponse = null; // Clear old cache
+
+    chrome.runtime.sendMessage({ type: "FETCH_AI_ANSWER", query: query }, (response) => {
+        // Handle runtime errors (like extension update/reload context invalidation)
+        if (chrome.runtime.lastError) {
+            console.error("Kramer Extension Error:", chrome.runtime.lastError);
+            response = { error: "Extension disconnected. Please refresh." };
+        }
+
+        // Save result to cache so re-injections are free
+        cachedResponse = response || { error: "No response received." };
+
+        // Update DOM if the box is still on screen
+        const contentDiv = document.getElementById("kramer-content");
+        if (contentDiv) {
+            if (cachedResponse.error) {
+                contentDiv.innerText = cachedResponse.error;
+            } else {
+                contentDiv.innerHTML = formatAnswer(cachedResponse.answer);
+            }
+        }
+    });
+  }
 }
 
-// Optimized: Persistent Observer instead of polling
-function startPersistentObserver(config) {
+// Persistent Observer
+function startPersistentObserver() {
   let debounceTimeout;
 
   const observer = new MutationObserver((mutations) => {
-    // Debounce: Only act if the DOM stops changing for 500ms
+    // Fast debounce: 150ms is quick enough to feel instant, 
+    // but slow enough to group multiple React/Angular DOM updates.
     clearTimeout(debounceTimeout);
     debounceTimeout = setTimeout(() => {
-      // Check if our box is missing
-      if (!document.querySelector("#kramer-ai-box")) {
+      if (!document.getElementById("kramer-ai-box")) {
         injectKramerBox();
       }
-    }, 500);
+    }, 150);
   });
 
-  // Observe the body for major layout changes (AJAX navigation/hydration)
   observer.observe(document.body, { 
     childList: true, 
     subtree: true 
@@ -107,15 +155,11 @@ function startPersistentObserver(config) {
 }
 
 // Initial Bootstrap
-const config = getEngineConfig();
-if (config) {
-  // Try immediate injection
+if (getEngineConfig()) {
   injectKramerBox();
-
-  // Start the persistent observer to handle AJAX and Hydration
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => startPersistentObserver(config));
+    document.addEventListener('DOMContentLoaded', startPersistentObserver);
   } else {
-    startPersistentObserver(config);
+    startPersistentObserver();
   }
 }
