@@ -11,8 +11,8 @@ const SEARCH_ENGINES = {
 
 // State management
 let isCreatingBox = false; // Short-term lock for DOM manipulation
-let lastQuery = null;      // Track the query currently being fetched or displayed
-let cachedResponse = null; // Store the answer to prevent re-fetching
+let lastQuery = null;      // Track the query to prevent duplicate API calls
+let cachedResponse = null; // Store the answer for instant re-injection
 
 function getEngineConfig() {
   const hostname = window.location.hostname;
@@ -36,7 +36,7 @@ function findTarget(selectors) {
   return null;
 }
 
-// Helper to format text
+// Logic preserved exactly from your "good version"
 function formatAnswer(text) {
   return text
     .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
@@ -59,7 +59,7 @@ function injectKramerBox() {
   const target = findTarget(config.selectors);
   if (!target) return;
 
-  // Lock acquired
+  // Lock DOM manipulation
   isCreatingBox = true;
 
   const box = document.createElement("div");
@@ -70,8 +70,8 @@ function injectKramerBox() {
   }
 
   // 3. Render Content
-  // If we have a cached response for THIS query, show it immediately.
-  // This prevents "Gathering thoughts..." flashing if the box was just wiped.
+  // If we have a cached response for THIS exact query, render it immediately.
+  // This prevents the text from flashing "Gathering..." if the site wipes our box.
   if (query === lastQuery && cachedResponse) {
     let contentHtml = "Gathering thoughts...";
     if (cachedResponse.error) {
@@ -85,7 +85,7 @@ function injectKramerBox() {
       <div id="kramer-content">${contentHtml}</div>
     `;
   } else {
-    // New query or still loading: Show loading state
+    // Brand new query: Show loading state
     box.innerHTML = `
       <div class="kramer-header">🕶️ Kramer Intelligence</div>
       <div id="kramer-content">Gathering thoughts...</div>
@@ -93,53 +93,54 @@ function injectKramerBox() {
   }
 
   // 4. Insert into DOM
-  // Insert BEFORE lists to keep HTML valid, otherwise PREPEND inside containers
   if (target.tagName === 'OL' || target.tagName === 'UL') {
     target.parentElement.insertBefore(box, target);
   } else {
     target.prepend(box);
   }
 
-  // Unlock DOM manipulation immediately so we can recover if wiped
+  // Unlock DOM manipulation immediately.
+  // We do NOT wait for the API call. If the site wipes the box 1ms from now,
+  // we want to be ready to put it back instantly.
   isCreatingBox = false;
 
-  // 5. Fetch ONLY if this is a brand new query
-  // We check 'query !== lastQuery' to ensure we only fire the API once per unique search.
+  // 5. Fetch ONLY if this is a new query (Single API Call Guarantee)
   if (query !== lastQuery) {
     // LOCK: Mark this query as "in progress" immediately
     lastQuery = query;
     cachedResponse = null; // Clear old cache
 
     chrome.runtime.sendMessage({ type: "FETCH_AI_ANSWER", query: query }, (response) => {
-        // Handle runtime errors (like extension update/reload context invalidation)
+        // Handle potential runtime errors (extension context invalidated)
         if (chrome.runtime.lastError) {
             console.error("Kramer Extension Error:", chrome.runtime.lastError);
-            response = { error: "Extension disconnected. Please refresh." };
+            // Don't cache errors so we can retry later if needed
+            lastQuery = null; 
+            return;
         }
 
-        // Save result to cache so re-injections are free
-        cachedResponse = response || { error: "No response received." };
+        // Save result to cache so re-injections are free and instant
+        cachedResponse = response;
 
         // Update DOM if the box is still on screen
         const contentDiv = document.getElementById("kramer-content");
-        if (contentDiv) {
-            if (cachedResponse.error) {
-                contentDiv.innerText = cachedResponse.error;
+        if (contentDiv && response) {
+            if (response.error) {
+                contentDiv.innerText = response.error;
             } else {
-                contentDiv.innerHTML = formatAnswer(cachedResponse.answer);
+                contentDiv.innerHTML = formatAnswer(response.answer);
             }
         }
     });
   }
 }
 
-// Persistent Observer
+// Persistent Observer with Debounce
 function startPersistentObserver() {
   let debounceTimeout;
 
   const observer = new MutationObserver((mutations) => {
-    // Fast debounce: 150ms is quick enough to feel instant, 
-    // but slow enough to group multiple React/Angular DOM updates.
+    // Fast debounce (150ms) to feel instant but group React/Angular updates
     clearTimeout(debounceTimeout);
     debounceTimeout = setTimeout(() => {
       if (!document.getElementById("kramer-ai-box")) {
